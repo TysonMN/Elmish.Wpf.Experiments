@@ -6,17 +6,22 @@ open System.Windows
 
 type Model =
     { Items: string list
-      SelectedItem: string option }
+      SelectedItem: string option
+      CopiedItem: string option }
 
 type CmdMsgs =
     | SetToClipboard of string
 
 let init () =
     let items = [ "A"; "B"; "C" ]
-    { Items =  items; SelectedItem = None }, []
+    { Items =  items
+      SelectedItem = None
+      CopiedItem = None },
+    []
 
 type Msg =
     | SelectItem of string option
+    | SetCopiedItem of string
     | Copy of string
     | Paste of string
     | CmdException of exn
@@ -24,7 +29,8 @@ type Msg =
 let update msg model =
     match msg with
     | SelectItem x -> { model with SelectedItem = x }, []
-    | Copy x -> model, [ SetToClipboard x ]
+    | SetCopiedItem x -> { model with CopiedItem = Some x }, []
+    | Copy x -> { model with CopiedItem = Some x }, [ SetToClipboard x ]
     | Paste x -> { model with Items = List.append model.Items [ sprintf "%s+" x ] }, []
     | CmdException _ -> model, []
 
@@ -33,7 +39,9 @@ let ClipboardKey = "Some key for test"
 let bindings () = [
     "Items" |> Binding.subModelSeq
         ( fun m -> m.Items
+        , snd
         , id
+        , snd
         , fun () -> [])
 
     "SelectedItem" |> Binding.subModelSelectedItem
@@ -46,25 +54,22 @@ let bindings () = [
         | Some x -> Copy x |> Some
         | None -> None)
 
-    //"Paste" |> Binding.cmdParamIf (fun _ _ ->
-    "Paste" |> Binding.cmdIf (fun _ ->
-        // On the first run, you will see that after you do a copy the paste is still disabled,
-        // if you put a breakpoint (or look at the output window) you will see
-        // "Is some? true" being printed. You will have to click somewhere to regenerate the state.
-        // Now restart the app and you will see that the button is always enabled because the previous
-        // copy is still active.
-        // Close the app, copy anything else (like this text), re-run the app and you are back to square 1.
-        // Note1: You can use Ctrl+V which seems to be always taking the latest state compared to the button.
-        // Note2: Using cmd.ParamIf works.
-        let result =
-            if Clipboard.ContainsData(ClipboardKey)
-            then Clipboard.GetData(ClipboardKey) :?> string |> Paste |> Some
-            else None
-
-        System.Diagnostics.Debug.WriteLine(sprintf "Is some? %b" result.IsSome)
-
-        result)
+    "Paste" |> Binding.cmdIf (fun m -> m.CopiedItem |> Option.map Paste)
 ]
+
+let checkClipborad () =
+    if Clipboard.ContainsData(ClipboardKey)
+    then Clipboard.GetData(ClipboardKey) :?> string |> Some
+    else None
+
+let keepCheckingClipboard dispatch =
+    async {
+        while true do
+            checkClipborad ()
+            |> Option.map SetCopiedItem
+            |> Option.iter dispatch
+            do! Async.Sleep 500
+    } |> Async.StartImmediate
 
 let bindCmd = function
     | SetToClipboard x ->
@@ -74,6 +79,7 @@ let bindCmd = function
 
 let main fwkElement =
     Program.mkProgramWpfWithCmdMsg init update bindings bindCmd
+    |> Program.withSubscription (fun _ -> Cmd.ofSub keepCheckingClipboard)
     |> Program.startElmishLoop
         { ElmConfig.Default with
             LogConsole = true
